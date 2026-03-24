@@ -1,0 +1,14 @@
+# Binaries
+main
+main.exe
+
+# Sensitive Firebase credentials
+prueba-perros-*.json
+
+# Environment variables
+.env
+.env.example
+
+# OS files
+.DS_Store
+Thumbs.db

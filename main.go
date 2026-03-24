@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	firebase "firebase.google.com/go/v4"
 	"firebase.google.com/go/v4/messaging"
 	"github.com/gorilla/websocket"
+	"github.com/joho/godotenv"
 	"google.golang.org/api/option"
 )
 
@@ -31,6 +33,13 @@ type NotificationRequest struct {
 
 type TokenRequest struct {
 	Token string `json:"token"`
+}
+
+type ExpoPushMessage struct {
+	To    string `json:"to"`
+	Title string `json:"title"`
+	Body  string `json:"body"`
+	Sound string `json:"sound"`
 }
 
 // --------------------------------------------------
@@ -166,18 +175,31 @@ func handleSendNotification(w http.ResponseWriter, r *http.Request) {
 	broadcast(msg)
 	log.Printf("📡 Enviado por WebSocket a %d clientes\n", len(clients))
 
-	// 2. Send push notification via Firebase (background)
+	// 2. Send push notifications
 	mu.Lock()
-	tokens := make([]string, 0, len(pushTokens))
+	var fcmTokens []string
+	var expoTokens []string
 	for token := range pushTokens {
-		tokens = append(tokens, token)
+		// Detectar si es un token de Expo o FCM nativo
+		if len(token) > 17 && token[:17] == "ExponentPushToken" {
+			expoTokens = append(expoTokens, token)
+		} else {
+			fcmTokens = append(fcmTokens, token)
+		}
 	}
 	mu.Unlock()
 
-	if len(tokens) > 0 {
-		go sendFirebasePushNotifications(tokens, req.Title, req.Body)
-		log.Printf("🚀 Enviando push notification a %d tokens vía FCM\n", len(tokens))
-	} else {
+	if len(fcmTokens) > 0 {
+		go sendFirebasePushNotifications(fcmTokens, req.Title, req.Body)
+		log.Printf("🚀 Enviando push a %d tokens vía Firebase (APK)\n", len(fcmTokens))
+	}
+
+	if len(expoTokens) > 0 {
+		go sendExpoPushNotifications(expoTokens, req.Title, req.Body)
+		log.Printf("🚀 Enviando push a %d tokens vía Expo (Dev)\n", len(expoTokens))
+	}
+
+	if len(fcmTokens) == 0 && len(expoTokens) == 0 {
 		log.Println("⚠️  No hay push tokens registrados")
 	}
 
@@ -185,7 +207,8 @@ func handleSendNotification(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":            "ok",
 		"websocket_clients": len(clients),
-		"push_tokens":       len(tokens),
+		"fcm_tokens":        len(fcmTokens),
+		"expo_tokens":       len(expoTokens),
 	})
 }
 
@@ -235,6 +258,36 @@ func sendFirebasePushNotifications(tokens []string, title, body string) {
 	}
 }
 
+func sendExpoPushNotifications(tokens []string, title, body string) {
+	messages := make([]ExpoPushMessage, len(tokens))
+	for i, token := range tokens {
+		messages[i] = ExpoPushMessage{
+			To:    token,
+			Title: title,
+			Body:  body,
+			Sound: "default",
+		}
+	}
+
+	jsonData, err := json.Marshal(messages)
+	if err != nil {
+		log.Println("Error marshaling push messages:", err)
+		return
+	}
+
+	resp, err := http.Post(
+		"https://exp.host/--/api/v2/push/send",
+		"application/json",
+		bytes.NewBuffer(jsonData),
+	)
+	if err != nil {
+		log.Println("Error sending push notification to Expo:", err)
+		return
+	}
+	defer resp.Body.Close()
+	log.Println("📬 Notificaciones enviadas a Expo con éxito")
+}
+
 // --------------------------------------------------
 // CORS middleware
 // --------------------------------------------------
@@ -260,7 +313,18 @@ func corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
 
 func initFirebase() {
 	ctx := context.Background()
-	opt := option.WithCredentialsFile("prueba-perros-23231-firebase-adminsdk-fbsvc-0558e06804.json")
+	var opt option.ClientOption
+
+	// Prioritizar variable de entorno para seguridad (Render)
+	firebaseConfig := os.Getenv("FIREBASE_CONFIG")
+	if firebaseConfig != "" {
+		log.Println("🔐 Usando credenciales de Firebase desde variable de entorno")
+		opt = option.WithCredentialsJSON([]byte(firebaseConfig))
+	} else {
+		log.Println("📂 Usando archivo local de credenciales de Firebase")
+		opt = option.WithCredentialsFile("prueba-perros-23231-firebase-adminsdk-fbsvc-0558e06804.json")
+	}
+
 	app, err := firebase.NewApp(ctx, nil, opt)
 	if err != nil {
 		log.Fatalf("❌ Error inicializando Firebase app: %v\n", err)
@@ -279,6 +343,9 @@ func initFirebase() {
 // --------------------------------------------------
 
 func main() {
+	// Cargar variables de entorno desde .env si existe (Local)
+	godotenv.Load()
+
 	initFirebase()
 
 	http.HandleFunc("/ws", handleWebSocket)
