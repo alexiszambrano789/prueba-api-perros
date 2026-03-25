@@ -21,8 +21,8 @@ WORKDIR /app
 # Copy the binary from the builder
 COPY --from=builder /app/main .
 
-# Copy the Firebase service account JSON
-COPY prueba-perros-23231-firebase-adminsdk-fbsvc-0558e06804.json .
+# Note: The Firebase JSON is not copied here. 
+# It is provided as an environment variable (FIREBASE_CONFIG) in Render.
 
 # Expose the port (Render will use $PORT)
 EXPOSE 8080
