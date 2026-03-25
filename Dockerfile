@@ -24,8 +24,7 @@ COPY --from=builder /app/main .
 # Note: The Firebase JSON is not copied here. 
 # It is provided as an environment variable (FIREBASE_CONFIG) in Render.
 
-# Expose the port (Render will use $PORT)
-EXPOSE 8080
+# Render manages ports dynamically; EXPOSE is not required.
 
 # Run the application
 CMD ["./main"]
