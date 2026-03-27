@@ -56,6 +56,9 @@ var (
 	}
 )
 
+const tokensFile = "tokens.json"
+
+
 // --------------------------------------------------
 // WebSocket handlers
 // --------------------------------------------------
@@ -100,8 +103,10 @@ func (c *Client) readPump() {
 			mu.Lock()
 			pushTokens[tokenReq.Token] = true
 			mu.Unlock()
+			saveTokens()
 			log.Printf("🔑 Push token registrado via WebSocket: %s\n", tokenReq.Token)
 		}
+
 	}
 }
 
@@ -146,8 +151,10 @@ func handleRegisterToken(w http.ResponseWriter, r *http.Request) {
 	mu.Lock()
 	pushTokens[req.Token] = true
 	mu.Unlock()
+	saveTokens()
 
 	log.Printf("🔑 Push token registrado: %s\n", req.Token)
+
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
@@ -220,6 +227,48 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 		"push_tokens":       len(pushTokens),
 	})
 }
+
+// --------------------------------------------------
+// Persistence
+// --------------------------------------------------
+
+func saveTokens() {
+	mu.Lock()
+	defer mu.Unlock()
+
+	data, err := json.MarshalIndent(pushTokens, "", "  ")
+	if err != nil {
+		log.Printf("❌ Error serializando tokens: %v\n", err)
+		return
+	}
+
+	if err := os.WriteFile(tokensFile, data, 0644); err != nil {
+		log.Printf("❌ Error guardando archivo de tokens: %v\n", err)
+	}
+}
+
+func loadTokens() {
+	if _, err := os.Stat(tokensFile); os.IsNotExist(err) {
+		log.Println("ℹ️ No se encontró archivo de tokens previo, comenzando vacío")
+		return
+	}
+
+	data, err := os.ReadFile(tokensFile)
+	if err != nil {
+		log.Printf("❌ Error leyendo archivo de tokens: %v\n", err)
+		return
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if err := json.Unmarshal(data, &pushTokens); err != nil {
+		log.Printf("❌ Error deserializando tokens: %v\n", err)
+		return
+	}
+
+	log.Printf("✅ %d tokens cargados desde %s\n", len(pushTokens), tokensFile)
+}
+
 
 // --------------------------------------------------
 // Firebase Push API
@@ -347,6 +396,8 @@ func main() {
 	godotenv.Load()
 
 	initFirebase()
+	loadTokens()
+
 
 	http.HandleFunc("/ws", handleWebSocket)
 	http.HandleFunc("/register-token", corsMiddleware(handleRegisterToken))
