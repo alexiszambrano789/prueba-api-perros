@@ -289,9 +289,24 @@ func sendFirebasePushNotifications(tokens []string, title, body string) {
 			Title: title,
 			Body:  body,
 		},
+		Data: map[string]string{
+			"title": title,
+			"body":  body,
+			"type":  "notification",
+		},
+		Android: &messaging.AndroidConfig{
+			Priority: "high",
+			Notification: &messaging.AndroidNotification{
+				ChannelID:     "default",
+				NotificationPriority: messaging.PriorityHigh,
+				DefaultSound:  true,
+				DefaultVibrateTimings: true,
+			},
+		},
 	}
 
 	br, err := fcmClient.SendEachForMulticast(ctx, message)
+
 	if err != nil {
 		log.Printf("❌ Error enviando mensaje por Firebase: %v\n", err)
 		return
