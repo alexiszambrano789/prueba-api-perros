@@ -298,11 +298,11 @@ func sendFirebasePushNotifications(tokens []string, title, body string) {
 			Priority: "high",
 			Notification: &messaging.AndroidNotification{
 				ChannelID:     "default",
-				NotificationPriority: messaging.PriorityHigh,
 				DefaultSound:  true,
 				DefaultVibrateTimings: true,
 			},
 		},
+
 	}
 
 	br, err := fcmClient.SendEachForMulticast(ctx, message)
