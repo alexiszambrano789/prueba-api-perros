@@ -35,6 +35,13 @@ type TokenRequest struct {
 	Token string `json:"token"`
 }
 
+type User struct {
+	Username  string `json:"username"`
+	Email     string `json:"email"`
+	Password  string `json:"password"`
+	PushToken string `json:"push_token"`
+}
+
 type ExpoPushMessage struct {
 	To    string `json:"to"`
 	Title string `json:"title"`
@@ -49,6 +56,7 @@ type ExpoPushMessage struct {
 var (
 	clients    = make(map[*Client]bool)
 	pushTokens = make(map[string]bool)
+	users      = make(map[string]User)
 	mu         sync.Mutex
 	fcmClient  *messaging.Client
 	upgrader   = websocket.Upgrader{
@@ -56,7 +64,10 @@ var (
 	}
 )
 
-const tokensFile = "tokens.json"
+const (
+	tokensFile = "tokens.json"
+	usersFile  = "users.json"
+)
 
 
 // --------------------------------------------------
@@ -156,6 +167,84 @@ func handleRegisterToken(w http.ResponseWriter, r *http.Request) {
 	log.Printf("🔑 Push token registrado: %s\n", req.Token)
 
 	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func handleRegister(w http.ResponseWriter, r *http.Request) {
+	var user User
+	if err := json.NewDecoder(r.Body).Decode(&user); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	mu.Lock()
+	if _, exists := users[user.Username]; exists {
+		mu.Unlock()
+		http.Error(w, "User already exists", http.StatusConflict)
+		return
+	}
+	users[user.Username] = user
+	mu.Unlock()
+	saveUsers()
+
+	log.Printf("👤 Usuario registrado: %s\n", user.Username)
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func handleLogin(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Username string `json:"username"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	mu.Lock()
+	user, exists := users[req.Username]
+	mu.Unlock()
+
+	if !exists {
+		http.Error(w, "User not found", http.StatusNotFound)
+		return
+	}
+
+	log.Printf("🔑 Usuario logeado: %s\n", user.Username)
+	json.NewEncoder(w).Encode(user)
+}
+
+func handleUpdateUserToken(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Username string `json:"username"`
+		Token    string `json:"token"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	mu.Lock()
+	user, exists := users[req.Username]
+	if !exists {
+		mu.Unlock()
+		http.Error(w, "User not found", http.StatusNotFound)
+		return
+	}
+
+	user.PushToken = req.Token
+	users[req.Username] = user
+	
+	// Also add to global pushTokens map for broadcasting
+	if req.Token != "" {
+		pushTokens[req.Token] = true
+	}
+	mu.Unlock()
+	
+	saveUsers()
+	saveTokens()
+
+	log.Printf("📲 Token actualizado para %s: %s\n", req.Username, req.Token)
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
@@ -267,6 +356,43 @@ func loadTokens() {
 	}
 
 	log.Printf("✅ %d tokens cargados desde %s\n", len(pushTokens), tokensFile)
+}
+
+func saveUsers() {
+	mu.Lock()
+	defer mu.Unlock()
+
+	data, err := json.MarshalIndent(users, "", "  ")
+	if err != nil {
+		log.Printf("❌ Error serializando usuarios: %v\n", err)
+		return
+	}
+
+	if err := os.WriteFile(usersFile, data, 0644); err != nil {
+		log.Printf("❌ Error guardando archivo de usuarios: %v\n", err)
+	}
+}
+
+func loadUsers() {
+	if _, err := os.Stat(usersFile); os.IsNotExist(err) {
+		log.Println("ℹ️ No se encontró archivo de usuarios previo, comenzando vacío")
+		return
+	}
+
+	data, err := os.ReadFile(usersFile)
+	if err != nil {
+		log.Printf("❌ Error leyendo archivo de usuarios: %v\n", err)
+		return
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if err := json.Unmarshal(data, &users); err != nil {
+		log.Printf("❌ Error deserializando usuarios: %v\n", err)
+		return
+	}
+
+	log.Printf("✅ %d usuarios cargados desde %s\n", len(users), usersFile)
 }
 
 
@@ -412,10 +538,13 @@ func main() {
 
 	initFirebase()
 	loadTokens()
-
+	loadUsers()
 
 	http.HandleFunc("/ws", handleWebSocket)
 	http.HandleFunc("/register-token", corsMiddleware(handleRegisterToken))
+	http.HandleFunc("/register", corsMiddleware(handleRegister))
+	http.HandleFunc("/login", corsMiddleware(handleLogin))
+	http.HandleFunc("/update-user-token", corsMiddleware(handleUpdateUserToken))
 	http.HandleFunc("/send-notification", corsMiddleware(handleSendNotification))
 	http.HandleFunc("/status", corsMiddleware(handleStatus))
 
