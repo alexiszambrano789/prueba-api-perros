@@ -29,6 +29,7 @@ type Client struct {
 type NotificationRequest struct {
 	Title string `json:"title"`
 	Body  string `json:"body"`
+	Role  string `json:"role"` // Optional: "admin" or "user"
 }
 
 type TokenRequest struct {
@@ -39,6 +40,7 @@ type User struct {
 	Username  string `json:"username"`
 	Email     string `json:"email"`
 	Password  string `json:"password"`
+	Role      string `json:"role"` // "admin" or "user"
 	PushToken string `json:"push_token"`
 }
 
@@ -195,6 +197,7 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
 func handleLogin(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Username string `json:"username"`
+		Password string `json:"password"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid request", http.StatusBadRequest)
@@ -205,12 +208,12 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 	user, exists := users[req.Username]
 	mu.Unlock()
 
-	if !exists {
-		http.Error(w, "User not found", http.StatusNotFound)
+	if !exists || user.Password != req.Password {
+		http.Error(w, "Invalid username or password", http.StatusUnauthorized)
 		return
 	}
 
-	log.Printf("🔑 Usuario logeado: %s\n", user.Username)
+	log.Printf("🔑 Usuario logeado: %s (Rol: %s)\n", user.Username, user.Role)
 	json.NewEncoder(w).Encode(user)
 }
 
@@ -275,12 +278,22 @@ func handleSendNotification(w http.ResponseWriter, r *http.Request) {
 	mu.Lock()
 	var fcmTokens []string
 	var expoTokens []string
-	for token := range pushTokens {
-		// Detectar si es un token de Expo o FCM nativo
-		if len(token) > 17 && token[:17] == "ExponentPushToken" {
-			expoTokens = append(expoTokens, token)
-		} else {
-			fcmTokens = append(fcmTokens, token)
+
+	// Filter tokens by role if requested
+	for _, user := range users {
+		if user.PushToken == "" {
+			continue
+		}
+		
+		// If no role requested, or user role matches requested role
+		if req.Role == "" || user.Role == req.Role {
+			token := user.PushToken
+			// Detectar si es un token de Expo o FCM nativo
+			if len(token) > 17 && token[:17] == "ExponentPushToken" {
+				expoTokens = append(expoTokens, token)
+			} else {
+				fcmTokens = append(fcmTokens, token)
+			}
 		}
 	}
 	mu.Unlock()
@@ -296,7 +309,7 @@ func handleSendNotification(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(fcmTokens) == 0 && len(expoTokens) == 0 {
-		log.Println("⚠️  No hay push tokens registrados")
+		log.Println("⚠️  No hay push tokens que coincidan con el criterio")
 	}
 
 	w.WriteHeader(http.StatusOK)
