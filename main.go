@@ -24,6 +24,7 @@ import (
 type Client struct {
 	conn *websocket.Conn
 	send chan []byte
+	role string // "admin" or "user"
 }
 
 type NotificationRequest struct {
@@ -34,6 +35,7 @@ type NotificationRequest struct {
 
 type TokenRequest struct {
 	Token string `json:"token"`
+	Role  string `json:"role"` // Optional: register role for filtering
 }
 
 type User struct {
@@ -110,14 +112,20 @@ func (c *Client) readPump() {
 		}
 		log.Printf("📩 Mensaje recibido del cliente: %s\n", string(message))
 
-		// Check if it's a token registration
+		// Check if it's a token registration/identity
 		var tokenReq TokenRequest
-		if json.Unmarshal(message, &tokenReq) == nil && tokenReq.Token != "" {
+		if json.Unmarshal(message, &tokenReq) == nil {
 			mu.Lock()
-			pushTokens[tokenReq.Token] = true
+			if tokenReq.Token != "" {
+				pushTokens[tokenReq.Token] = true
+				log.Printf("🔑 Push token registrado via WebSocket: %s\n", tokenReq.Token)
+			}
+			if tokenReq.Role != "" {
+				c.role = tokenReq.Role
+				log.Printf("👤 WebSocket identificado con rol: %s\n", tokenReq.Role)
+			}
 			mu.Unlock()
 			saveTokens()
-			log.Printf("🔑 Push token registrado via WebSocket: %s\n", tokenReq.Token)
 		}
 
 	}
@@ -132,10 +140,15 @@ func (c *Client) writePump() {
 	}
 }
 
-func broadcast(message []byte) {
+func broadcast(message []byte, roleFilter string) {
 	mu.Lock()
 	defer mu.Unlock()
 	for client := range clients {
+		// Filter by role if provided
+		if roleFilter != "" && client.role != roleFilter {
+			continue
+		}
+		
 		select {
 		case client.send <- message:
 		default:
@@ -270,9 +283,10 @@ func handleSendNotification(w http.ResponseWriter, r *http.Request) {
 		"type":  "notification",
 		"title": req.Title,
 		"body":  req.Body,
+		"role":  req.Role,
 	})
-	broadcast(msg)
-	log.Printf("📡 Enviado por WebSocket a %d clientes\n", len(clients))
+	broadcast(msg, req.Role)
+	log.Printf("📡 Enviado por WebSocket filtrado por rol '%s'\n", req.Role)
 
 	// 2. Send push notifications
 	mu.Lock()
